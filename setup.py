@@ -13,7 +13,7 @@ setup(
     name="ethereum-serpent",
 
     # Package version
-    version='1.5.4',
+    version='2.0.2',
 
     description='Serpent compiler',
     maintainer='Vitalik Buterin',
@@ -23,12 +23,15 @@ setup(
 
     # Describes how to build the actual extension module from C source files.
     ext_modules=[
-         Extension(
-             'pyext',         # Python name of the module
-             ['bignum.cpp', 'util.cpp', 'tokenize.cpp',
-              'lllparser.cpp', 'parser.cpp', 'rewriter.cpp',
-              'compiler.cpp', 'funcs.cpp', 'pyserpent.cpp']
-         )],
+        Extension(
+            'serpent_pyext',         # Python name of the module
+            sources=['keccak-tiny.cpp', 'bignum.cpp', 'util.cpp',
+                     'tokenize.cpp', 'lllparser.cpp', 'parser.cpp',
+                     'functions.cpp', 'optimize.cpp', 'opcodes.cpp',
+                     'rewriteutils.cpp', 'preprocess.cpp', 'rewriter.cpp',
+                     'compiler.cpp', 'funcs.cpp', 'pyserpent.cpp'],
+            extra_compile_args=['-Wno-sign-compare']
+        )],
     py_modules=[
         'serpent',
         'pyserpent'
@@ -40,5 +43,13 @@ setup(
         'console_scripts': [
             'serpent = serpent:main',
         ],
-    }
-    ),
+    },
+    classifiers=[
+        'Intended Audience :: Developers',
+        'Programming Language :: Python :: 2',
+        'Programming Language :: Python :: 2.7',
+        'Programming Language :: Python :: 3',
+        'Programming Language :: Python :: 3.4',
+        'Programming Language :: Python :: 3.5',
+    ],
+)

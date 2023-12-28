@@ -1,23 +1,56 @@
 #include <Python.h>
 #include "structmember.h"
-
 #include <stdlib.h>
 #include <stdio.h>
 #include <iostream>
 #include "funcs.h"
 
+#if PY_MAJOR_VERSION >= 3
+#define PY_STRING_FORMAT "y#"
+#else
+#define PY_STRING_FORMAT "s#"
+#endif
+
 #define PYMETHOD(name, FROM, method, TO) \
-    static PyObject * name(PyObject *self, PyObject *args) { \
+    static PyObject * name(PyObject *, PyObject *args) { \
+        try { \
         FROM(med) \
         return TO(method(med)); \
+        } \
+        catch (std::string e) { \
+           PyErr_SetString(PyExc_Exception, e.c_str()); \
+           return NULL; \
+        } \
+    }
+
+#define PYMETHOD2(name, FROM, method, TO) \
+    static PyObject * name(PyObject *, PyObject *args) { \
+        try { \
+        FROM(med) \
+        return TO(method(a1med, a2med)); \
+        } \
+        catch (std::string e) { \
+           PyErr_SetString(PyExc_Exception, e.c_str()); \
+           return NULL; \
+        } \
     }
 
 #define FROMSTR(v) \
     const char *command; \
     int len; \
-    if (!PyArg_ParseTuple(args, "s#", &command, &len)) \
+    if (!PyArg_ParseTuple(args, PY_STRING_FORMAT, &command, &len)) \
         return NULL; \
     std::string v = std::string(command, len); \
+
+#define FROMSTRSTR(v) \
+    const char *command1; \
+    int len1; \
+    const char *command2; \
+    int len2; \
+    if (!PyArg_ParseTuple(args, "s#s#", &command1, &len1, &command2, &len2)) \
+        return NULL; \
+    std::string a1##v = std::string(command1, len1); \
+    std::string a2##v = std::string(command2, len2); \
 
 #define FROMNODE(v) \
     PyObject *node; \
@@ -34,7 +67,7 @@
 // Convert metadata into python wrapper form [file, ln, ch]
 PyObject* pyifyMetadata(Metadata m) {
     PyObject* a = PyList_New(0);
-    PyList_Append(a, Py_BuildValue("s#", m.file.c_str(), m.file.length()));
+    PyList_Append(a, Py_BuildValue(PY_STRING_FORMAT, m.file.c_str(), m.file.length()));
     PyList_Append(a, Py_BuildValue("i", m.ln));
     PyList_Append(a, Py_BuildValue("i", m.ch));
     return a;
@@ -45,7 +78,7 @@ PyObject* pyifyMetadata(Metadata m) {
 PyObject* pyifyNode(Node n) {
     PyObject* a = PyList_New(0);
     PyList_Append(a, Py_BuildValue("i", n.type == ASTNODE));
-    PyList_Append(a, Py_BuildValue("s#", n.val.c_str(), n.val.length()));
+    PyList_Append(a, Py_BuildValue(PY_STRING_FORMAT, n.val.c_str(), n.val.length()));
     PyList_Append(a, pyifyMetadata(n.metadata));
     for (unsigned i = 0; i < n.args.size(); i++)
         PyList_Append(a, pyifyNode(n.args[i]));
@@ -54,7 +87,12 @@ PyObject* pyifyNode(Node n) {
 
 // Convert string into python wrapper form
 PyObject* pyifyString(std::string s) {
-    return Py_BuildValue("s#", s.c_str(), s.length());
+    return Py_BuildValue(PY_STRING_FORMAT, s.c_str(), s.length());
+}
+
+// Convert integer into python wrapper form
+PyObject* pyifyInteger(unsigned int i) {
+    return Py_BuildValue("i", i);
 }
 
 // Convert list of nodes into python wrapper form
@@ -76,7 +114,11 @@ int cppifyInt(PyObject* o) {
 // Convert pyobject string into normal form
 std::string cppifyString(PyObject* o) {
     const char *command;
+#if PY_MAJOR_VERSION >= 3
+    if (!PyArg_Parse(o, "y", &command))
+#else
     if (!PyArg_Parse(o, "s", &command))
+#endif
         err("Argument should be string", Metadata());
     return std::string(command);
 }
@@ -123,12 +165,16 @@ PYMETHOD(ps_pretty_compile_lll, FROMNODE, prettyCompileLLL, pyifyNodeList)
 PYMETHOD(ps_serialize, FROMLIST, serialize, pyifyString)
 PYMETHOD(ps_deserialize, FROMSTR, deserialize, pyifyNodeList)
 PYMETHOD(ps_parse_lll, FROMSTR, parseLLL, pyifyNode)
+PYMETHOD(ps_mk_signature, FROMSTR, mkSignature, pyifyString)
+PYMETHOD(ps_mk_full_signature, FROMSTR, mkFullSignature, pyifyString)
+PYMETHOD(ps_mk_contract_info_decl, FROMSTR, mkContractInfoDecl, pyifyString)
+PYMETHOD(ps_get_prefix, FROMSTR, getPrefix, pyifyInteger)
 
 
 static PyMethodDef PyextMethods[] = {
     {"compile",  ps_compile, METH_VARARGS,
         "Compile code."},
-    {"compile_to_lll",  ps_parse,  METH_VARARGS,
+    {"compile_to_lll",  ps_compile_to_lll, METH_VARARGS,
         "Compile code to LLL."},
     {"compile_lll",  ps_compile_lll, METH_VARARGS,
         "Compile LLL to EVM."},
@@ -146,10 +192,33 @@ static PyMethodDef PyextMethods[] = {
         "Convert EVM bin to opcodes"},
     {"parse_lll",  ps_parse_lll, METH_VARARGS,
         "Parse LLL"},
+    {"mk_signature",  ps_mk_signature, METH_VARARGS,
+        "Make an extern signature for a file"},
+    {"mk_full_signature",  ps_mk_full_signature, METH_VARARGS,
+        "Make an extern signature for ABI use"},
+    {"mk_contract_info_decl",  ps_mk_contract_info_decl, METH_VARARGS,
+        "Make an extern contract info declaration"},
+    {"get_prefix",  ps_get_prefix, METH_VARARGS,
+        "Get the prefix for a signature declaration (eg. \"foo:[int256]:int256\")"},
     {NULL, NULL, 0, NULL}        /* Sentinel */
 };
 
-PyMODINIT_FUNC initpyext(void)
-{
-     PyObject *m = Py_InitModule( "pyext", PyextMethods );
+#if PY_MAJOR_VERSION >= 3
+static struct PyModuleDef SerpentModule = {
+    PyModuleDef_HEAD_INIT,
+    "serpent_pyext",
+    "...",
+    -1,
+    PyextMethods
+};
+
+PyMODINIT_FUNC PyInit_serpent_pyext(void) {
+    return PyModule_Create(&SerpentModule);
 }
+
+#else
+PyMODINIT_FUNC initserpent_pyext(void)
+{
+     Py_InitModule( "serpent_pyext", PyextMethods );
+}
+#endif

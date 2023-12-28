@@ -1,8 +1,23 @@
-import pyext
+import serpent_pyext as pyext
 import sys
+import re
+import binascii
+import json
+import os
 
-VERSION = '1.5.4'
+VERSION = '2.0.2'
 
+if sys.version_info.major == 2:
+    str_types = (bytes, str, unicode)
+else:
+    str_types = (bytes, str)
+
+
+def strtobytes(x):
+    return x.encode('ascii') if isinstance(x, str) else x
+
+def bytestostr(x):
+    return x.decode('ascii') if isinstance(x, bytes) else x
 
 class Metadata(object):
     def __init__(self, li):
@@ -23,7 +38,7 @@ class Token(object):
         return [0, self.val, self.metadata.out()]
 
     def __repr__(self):
-        return str(self.val)
+        return str(bytestostr(self.val))
 
 
 class Astnode(object):
@@ -37,7 +52,22 @@ class Astnode(object):
         return o
 
     def __repr__(self):
-        return '('+str(self.val)+' '+' '.join(map(repr, self.args))+')'
+        o = '(' + bytestostr(self.val)
+        subs = list(map(repr, self.args))
+        k = 0
+        out = " "
+        while k < len(subs) and o != "(seq":
+            if '\n' in subs[k] or len(out + subs[k]) >= 80:
+                break
+            out += bytestostr(subs[k]) + " "
+            k += 1
+        if k < len(subs):
+            o += out + "\n  "
+            o += '\n  '.join('\n'.join(map(bytestostr, subs[k:])).split('\n'))
+            o += '\n)'
+        else:
+            o += out[:-1] + ')'
+        return o
 
 
 def node(li):
@@ -46,27 +76,49 @@ def node(li):
     else:
         return Token(li[1], li[2])
 
-
 def take(x):
-    return pyext.parse_lll(x) if isinstance(x, (str, unicode)) else x.out()
+    return pyext.parse_lll(x) if is_string(x) else x.out()
 
 
 def takelist(x):
-    return map(take, parse(x).args if isinstance(x, (str, unicode)) else x)
+    return map(take, parse(x).args if is_string(x) else x)
 
 
-compile = lambda x: pyext.compile(x)
-compile_to_lll = lambda x: node(pyext.compile_to_lll(x))
-compile_lll = lambda x: pyext.compile_lll(take(x))
-parse = lambda x: node(pyext.parse(x))
-rewrite = lambda x: node(pyext.rewrite(take(x)))
-pretty_compile = lambda x: map(node, pyext.pretty_compile(x))
-pretty_compile_lll = lambda x: map(node, pyext.pretty_compile_lll(take(x)))
-serialize = lambda x: pyext.serialize(takelist(x))
+def pre_transform(code, params):
+    code2 = ''
+    for k, v in params.items():
+        if isinstance(v, str_types):
+            v = '"' + str(v) + '"'
+        code2 += 'macro $%s:\n    %s\n' % (k, v)
+    if os.path.exists(code):
+        return code2 + "inset('" + code + "')"
+    return code2 + code
+
+compile = lambda code, **kwargs: pyext.compile(strtobytes(pre_transform(code, kwargs)))
+compile_chunk = lambda code, **kwargs: pyext.compile_chunk(strtobytes(pre_transform(code, kwargs)))
+compile_to_lll = lambda code, **kwargs: node(pyext.compile_to_lll(strtobytes(pre_transform(code, kwargs))))
+compile_chunk_to_lll = lambda code, **kwargs: node(pyext.compile_chunk_to_lll(strtobytes(pre_transform(code, kwargs))))
+compile_lll = lambda x: pyext.compile_lll(take(strtobytes(x)))
+parse = lambda code, **kwargs: node(pyext.parse(strtobytes(pre_transform(code, kwargs))))
+rewrite = lambda x: node(pyext.rewrite(take(strtobytes(x))))
+rewrite_chunk = lambda x: node(pyext.rewrite_chunk(take(strtobytes(x))))
+pretty_compile = lambda code, **kwargs: map(node, pyext.pretty_compile(strtobytes(pre_transform(code, kwargs))))
+pretty_compile_chunk = lambda code, **kwargs: map(node, pyext.pretty_compile_chunk(strtobytes(pre_transform(code, kwargs))))
+pretty_compile_lll = lambda code, **kwargs: map(node, pyext.pretty_compile_lll(take(strtobytes(pre_transform(code, kwargs)))))
+serialize = lambda x: pyext.serialize(takelist(strtobytes(x)))
 deserialize = lambda x: map(node, pyext.deserialize(x))
+mk_signature = lambda code, **kwargs: pyext.mk_signature(strtobytes(pre_transform(code, kwargs)))
+mk_full_signature = lambda code, **kwargs: json.loads(bytestostr(pyext.mk_full_signature(strtobytes(pre_transform(code, kwargs)))))
+mk_contract_info_decl = lambda code, **kwargs: json.loads(bytestostr(pyext.mk_contract_info_decl(strtobytes(pre_transform(code, kwargs)))))
+get_prefix = lambda x: pyext.get_prefix(strtobytes(x)) % 2**32
 
-is_numeric = lambda x: isinstance(x, (int, long))
-is_string = lambda x: isinstance(x, (str, unicode))
+if sys.version_info.major == 2:
+    is_string = lambda x: isinstance(x, (str, unicode, bytes))
+    is_numeric = lambda x: isinstance(x, (int, long))
+else:
+    is_string = lambda x: isinstance(x, (str, bytes))
+    is_numeric = lambda x: isinstance(x, int)
+
 tobytearr = lambda n, L: [] if L == 0 else tobytearr(n / 256, L - 1)+[n % 256]
 
 
@@ -81,36 +133,44 @@ def fromhex(b):
     return 0 if len(b) == 0 else hexord(b[-1]) + 16 * fromhex(b[:-1])
 
 
-def numberize(b):
-    if is_numeric(b):
-        return b
-    elif b[0] in ["'", '"']:
-        return frombytes(b[1:-1])
-    elif b[:2] == '0x':
-        return fromhex(b[2:])
+def enc(n):
+    if is_numeric(n) and n < 2**256 and n > -2**255:
+        return ''.join(map(chr, tobytearr(n % 2**256, 32)))
+    elif is_numeric(n):
+        raise Exception("Number out of range: %r" % n)
+    elif is_string(n) and len(n) == 40:
+        return '\x00' * 12 + n.decode('hex')
+    elif is_string(n) and len(n) <= 32:
+        return '\x00' * (32 - len(n)) + n
+    elif is_string(n) and len(n) > 32:
+        raise Exception("String too long: %r" % n)
+    elif n is True:
+        return 1
+    elif n is False or n is None:
+        return 0
     else:
-        return int(b)
+        raise Exception("Cannot encode integer: %r" % n)
 
 
-def encode_datalist(vals):
-    def enc(n):
-        if is_numeric(n):
-            return ''.join(map(chr, tobytearr(n, 32)))
-        elif is_string(n) and len(n) == 40:
-            return '\x00' * 12 + n.decode('hex')
-        elif is_string(n):
-            return '\x00' * (32 - len(n)) + n
-        elif n is True:
-            return 1
-        elif n is False or n is None:
-            return 0
-    if isinstance(vals, (tuple, list)):
-        return ''.join(map(enc, vals))
-    elif vals == '':
-        return ''
+def cmdline_enc(n):
+    if n[:2] == '0x':
+        o = int(n[2:], 16)
+    elif re.match('^[0-9]*$', n):
+        o = int(n)
+    elif len(n) == 40:
+        o = n
     else:
-        # Assume you're getting in numbers or 0x...
-        return ''.join(map(enc, map(numberize, vals.split(' '))))
+        raise Exception("Cannot encode integer: %r" % n)
+    return enc(o)
+
+
+def list_dec(l):
+    assert l[0] == '[' and l[-1] == ']'
+    return [cmdline_enc(x.strip()) for x in l[1:-1].split(',')]
+
+
+def encode_datalist(*args):
+    raise Exception("Encode datalist deprecated")
 
 
 def decode_datalist(arr):
@@ -122,23 +182,58 @@ def decode_datalist(arr):
     return o
 
 
+def encode_abi(function_name, sig, *args, **kwargs):
+    raise Exception("encode_abi deprecated, please use "
+                    "the methods in pyethereum.abi")
+
+
+def decode_abi(arr, *lens):
+    o = []
+    pos = 1
+    i = 0
+    if len(lens) == 1 and isinstance(lens[0], list):
+        lens = lens[0]
+    while pos < len(arr):
+        bytez = int(lens[i]) if i < len(lens) else 32
+        o.append(frombytes(arr[pos: pos + bytez]))
+        i, pos = i + 1, pos + bytez
+    return o
+
+
 def main():
     if len(sys.argv) == 1:
-        print "serpent <command> <arg1> <arg2> ..."
+        print("serpent <command> <arg1> <arg2> ...")
     else:
-        cmd = sys.argv[2] if sys.argv[1] == '-2' else sys.argv[1]
+        cmd = sys.argv[2] if sys.argv[1] == '-s' else sys.argv[1]
         if sys.argv[1] == '-s':
-            args = [sys.stdin.read()] + sys.argv[3:]
-            if cmd == 'deserialize':
-                args[0] = args[0].strip().decode('hex')
+            argz = [sys.stdin.read()] + sys.argv[3:]
         elif sys.argv[1] == '-v':
-            print VERSION
+            print(VERSION)
             sys.exit()
         else:
             cmd = sys.argv[1]
-            args = sys.argv[2:]
-        o = globals()[cmd](*args)
-        if isinstance(o, (Token, Astnode, list)):
-            print repr(o)
+            argz = sys.argv[2:]
+        args, kwargs = [], {}
+        i = 0
+        while i < len(argz):
+            if argz[i][:2] == '--':
+                kwargs[argz[i][2:]] = argz[i+1]
+                i += 2
+            else:
+                args.append(argz[i])
+                i += 1
+        if cmd in ['deserialize', 'decode_datalist', 'decode_abi']:
+            args[0] = args[0].strip().decode('hex')
+        if cmd in ['encode_abi']:
+            kwargs['source'] = 'cmdline'
+        o = globals()[cmd](*args, **kwargs)
+        if cmd in ['mk_full_signature', 'mk_contract_info_decl']:
+            print(json.dumps(o))
+        elif isinstance(o, (Token, Astnode, dict, list)):
+            print(repr(o))
+        elif cmd in ['mk_full_signature', 'get_prefix']:
+            print(json.dumps(json.loads(o)))
+        elif cmd in ['mk_signature', 'get_prefix']:
+            print(o)
         else:
-            print o.encode('hex')
+            print(binascii.b2a_hex(o).decode('ascii'))

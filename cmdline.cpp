@@ -1,36 +1,40 @@
 #include <stdio.h>
+#include <string>
 #include <iostream>
 #include <vector>
 #include <map>
 #include "funcs.h"
+#include "bignum.h"
+
+static void print_help(const char *program_name) {
+       std::cout << "Usage: " << program_name <<
+      " command input\n"
+      "Where input -s for from stdin, a file, or interpreted as serpent code if does not exist as file."
+      "where command: \n"
+      " parse:          Just parses and returns s-expression code.\n"
+      " rewrite:        Parse, use rewrite rules print s-expressions of result.\n"
+      " compile:        Return resulting compiled EVM code in hex.\n"
+      " assemble:       Return result from step before compilation.\n";
+}
 
 int main(int argv, char** argc) {
     if (argv == 1) {
         std::cerr << "Must provide a command and arguments! Try parse, rewrite, compile, assemble\n";
         return 0;
     }
-    std::string flag = "";
     std::string command = argc[1];
+    if (command == "--help" || command == "-h") {
+        print_help(argc[0]);
+        return 0;
+    }
     std::string input;
     std::string secondInput;
-    if (std::string(argc[1]) == "-s") {
-        flag = command.substr(1);
-        command = argc[2];
-        input = "";
-        std::string line;
-        while (std::getline(std::cin, line)) {
-            input += line + "\n";
-        }
-        secondInput = argv == 3 ? "" : argc[3];
+    if (argv == 2) {
+         std::cerr << "Not enough arguments for serpent cmdline\n";
+         return 1;
     }
-    else {
-        if (argv == 2) {
-            std::cerr << "Not enough arguments for serpent cmdline\n";
-            throw(0);
-        }
-        input = argc[2];
-        secondInput = argv == 3 ? "" : argc[3];
-    }
+    input = argc[2];
+    secondInput = argv == 3 ? "" : argc[3];
     bool haveSec = secondInput.length() > 0;
     if (command == "parse" || command == "parse_serpent") {
         std::cout << printAST(parseSerpent(input), haveSec) << "\n";
@@ -48,7 +52,7 @@ int main(int argv, char** argc) {
         std::cout << binToHex(compileLLL(parseLLL(input, true))) << "\n";
     }
     else if (command == "dereference") {
-        std::cout << printAST(dereference(parseLLL(input, true)), haveSec) <<"\n";
+        std::cout << printTokens(dereference(parseLLL(input, true))) <<"\n";
     }
     else if (command == "pretty_assemble") {
         std::cout << printTokens(prettyAssemble(parseLLL(input, true))) <<"\n";
@@ -63,10 +67,7 @@ int main(int argv, char** argc) {
         std::cout << assemble(parseLLL(input, true)) << "\n";
     }
     else if (command == "serialize") {
-        std::cout << binToHex(serialize(tokenize(input))) << "\n";
-    }
-    else if (command == "flatten") {
-        std::cout << printTokens(flatten(parseLLL(input, true))) << "\n";
+        std::cout << binToHex(serialize(tokenize(input, Metadata(), false))) << "\n";
     }
     else if (command == "deserialize") {
         std::cout << printTokens(deserialize(hexToBin(input))) << "\n";
@@ -74,20 +75,17 @@ int main(int argv, char** argc) {
     else if (command == "compile") {
         std::cout << binToHex(compile(input)) << "\n";
     }
-    else if (command == "encode_datalist") {
-        std::vector<Node> tokens = tokenize(input);
-        std::vector<std::string> o;
-        for (int i = 0; i < (int)tokens.size(); i++) {
-            o.push_back(tokens[i].val);
-        }
-        std::cout << binToHex(encodeDatalist(o)) << "\n";
+    else if (command == "mk_signature") {
+        std::cout << mkSignature(input) << "\n";
     }
-    else if (command == "decode_datalist") {
-        std::vector<std::string> o = decodeDatalist(hexToBin(input));
-        std::vector<Node> tokens;
-        for (int i = 0; i < (int)o.size(); i++)
-            tokens.push_back(token(o[i]));
-        std::cout << printTokens(tokens) << "\n";
+    else if (command == "mk_full_signature") {
+        std::cout << mkFullSignature(input) << "\n";
+    }
+    else if (command == "mk_contract_info_decl") {
+        std::cout << mkContractInfoDecl(input) << "\n";
+    }
+    else if (command == "get_prefix") {
+        std::cout << getPrefix(input) << "\n";
     }
     else if (command == "tokenize") {
         std::cout << printTokens(tokenize(input));
@@ -95,12 +93,17 @@ int main(int argv, char** argc) {
     else if (command == "biject") {
         if (argv == 3)
              std::cerr << "Not enough arguments for biject\n";
-        int pos = decimalToInt(secondInput);
+        int pos = decimalToUnsigned(secondInput);
         std::vector<Node> n = prettyCompile(input);
         if (pos >= (int)n.size())
              std::cerr << "Code position too high\n";
         Metadata m = n[pos].metadata;
         std::cout << "Opcode: " << n[pos].val << ", file: " << m.file << 
              ", line: " << m.ln << ", char: " << m.ch << "\n";
+    } else {
+        std::cerr << "Unknown command" << std::endl;
+        print_help(argc[0]);
+        return 1;
     }
+    return 0;
 }
